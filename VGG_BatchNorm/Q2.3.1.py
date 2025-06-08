@@ -17,7 +17,8 @@ from data.loaders import get_cifar_loader
 device_id = [0,1,2,3]
 num_workers = 4
 batch_size = 128
-
+# 定义学习率列表
+learning_rates = [1e-3, 2e-3, 1e-4, 5e-4]  # [1e-3, 2e-3, 1e-4, 5e-4]
 # add our package dir to path 
 # 获取当前脚本文件的绝对路径
 current_script_path = os.path.abspath(__file__)
@@ -28,7 +29,18 @@ script_dir = os.path.dirname(current_script_path)
 # 构建 reports_Ir 目录路径
 home_path = script_dir  # 改为直接使用脚本所在目录
 figures_path = os.path.join(home_path, 'reports_Ir', 'figures_Ir')
+# 模型保存路径
 models_path = os.path.join(home_path, 'reports_Ir', 'models_Ir')
+os.makedirs(models_path, exist_ok=True)
+
+# 分别定义 VGG-A 和 VGG-A_BN 的最佳模型保存路径
+best_model_paths_vgg_a = {
+    lr: os.path.join(models_path, f'best_model_vgg_a_lr_{lr:.5f}.pth') for lr in learning_rates
+}
+
+best_model_paths_vgg_a_bn = {
+    lr: os.path.join(models_path, f'best_model_vgg_a_bn_lr_{lr:.5f}.pth') for lr in learning_rates
+}
 
 # Make sure you are using the right device.
 device_id = device_id
@@ -89,17 +101,20 @@ def set_random_seeds(seed_value=0, device='cpu'):
 # Of course, as before, you can test your model
 # after drawing a training round and save the curve
 # to observe the training
-def train(model, optimizer, criterion, train_loader, val_loader, scheduler=None, epochs_n=100, best_model_path=None, learning_rates=[0.001]):
+def train(model, optimizer, criterion, train_loader, val_loader, scheduler=None, epochs_n=100, best_model_paths=None, learning_rates=[0.001]):
     model.to(device)
-    learning_curves = {lr: [np.nan] * epochs_n for lr in learning_rates}  # 为每个学习率创建一个损失曲线
+    learning_curves = {lr: [np.nan] * epochs_n for lr in learning_rates}
     train_accuracy_curves = {lr: [np.nan] * epochs_n for lr in learning_rates}
     val_accuracy_curves = {lr: [np.nan] * epochs_n for lr in learning_rates}
-    max_val_accuracy = 0
-    max_val_accuracy_epoch = 0
+    max_val_accuracies = {lr: 0.0 for lr in learning_rates}  # 每个学习率单独记录最高准确率
+    max_val_accuracy_epochs = {lr: 0 for lr in learning_rates}
 
     for lr in learning_rates:
         print(f"Training with learning rate: {lr}")
-        optimizer.param_groups[0]['lr'] = lr  # 设置当前学习率
+        optimizer.param_groups[0]['lr'] = lr
+        best_acc_for_lr = 0.0
+        best_epoch_for_lr = 0
+
         for epoch in tqdm(range(epochs_n), unit='epoch'):
             model.train()
             loss_list = []
@@ -113,15 +128,21 @@ def train(model, optimizer, criterion, train_loader, val_loader, scheduler=None,
                 loss.backward()
                 optimizer.step()
                 loss_list.append(loss.item())
-            
-            learning_curves[lr][epoch] = np.mean(loss_list)
-            train_accuracy_curves[lr][epoch] = get_accuracy(model, train_loader)
-            val_accuracy_curves[lr][epoch] = get_accuracy(model, val_loader)
-            if val_accuracy_curves[lr][epoch] > max_val_accuracy:
-                max_val_accuracy = val_accuracy_curves[lr][epoch]
-                max_val_accuracy_epoch = epoch
-                if best_model_path:
-                    torch.save(model.state_dict(), best_model_path)
+
+            avg_loss = np.mean(loss_list)
+            train_acc = get_accuracy(model, train_loader)
+            val_acc = get_accuracy(model, val_loader)
+
+            learning_curves[lr][epoch] = avg_loss
+            train_accuracy_curves[lr][epoch] = train_acc
+            val_accuracy_curves[lr][epoch] = val_acc
+
+            if val_acc > max_val_accuracies[lr]:
+                max_val_accuracies[lr] = val_acc
+                max_val_accuracy_epochs[lr] = epoch
+                if best_model_paths and lr in best_model_paths:
+                    torch.save(model.state_dict(), best_model_paths[lr])
+
     return learning_curves, train_accuracy_curves, val_accuracy_curves
 
 # 打印每个学习率的训练结果
@@ -139,7 +160,7 @@ def print_learning_rate_results(loss_curves, train_acc_curves, val_acc_curves, l
 
 # Train your model
 # feel free to modify
-epo = 20
+epo = 10
 # loss_save_path = os.path.join(models_path, 'losses_BN')
 # grad_save_path = os.path.join(models_path, 'grads_BN')
 # best_model_path = os.path.join(models_path, 'best_model_BN.pth')
@@ -149,8 +170,7 @@ epo = 20
 os.makedirs(figures_path, exist_ok=True)  
 
 set_random_seeds(seed_value=2020, device=device)
-# 定义学习率列表
-learning_rates = [1e-3, 2e-3, 1e-4, 5e-4]
+
 
 # 训练VGG-A模型（无BN）
 model_vgg_a = VGG_A()
@@ -158,14 +178,14 @@ optimizer_vgg_a = torch.optim.Adam(model_vgg_a.parameters(), lr=learning_rates[0
 criterion = nn.CrossEntropyLoss()
 losses_vgg_a, train_acc_vgg_a, val_acc_vgg_a = train(
     model_vgg_a, optimizer_vgg_a, criterion, train_loader, val_loader,
-    epochs_n=epo, learning_rates=learning_rates)
+    epochs_n=epo, best_model_paths=best_model_paths_vgg_a, learning_rates=learning_rates)
 
 # 训练VGG-A_BN模型（有BN）
 model_vgg_a_bn = VGG_A_BN()
 optimizer_vgg_a_bn = torch.optim.Adam(model_vgg_a_bn.parameters(), lr=learning_rates[0])
 losses_vgg_a_bn, train_acc_vgg_a_bn, val_acc_vgg_a_bn = train(
     model_vgg_a_bn, optimizer_vgg_a_bn, criterion, train_loader, val_loader,
-    epochs_n=epo, learning_rates=learning_rates)
+    epochs_n=epo, best_model_paths=best_model_paths_vgg_a_bn, learning_rates=learning_rates)
 
 # 输出每个学习率的训练结果
 print_learning_rate_results(losses_vgg_a, train_acc_vgg_a, val_acc_vgg_a, "VGG-A")
